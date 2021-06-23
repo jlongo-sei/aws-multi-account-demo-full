@@ -1,0 +1,191 @@
+version: 2.1
+custom:
+  - &region us-west-2
+  - &stack_name networking-lane-deploy
+  - &dev_params Lane=dev
+  - &qa_params Lane=qa
+  - &stg_params Lane=stg
+  - &prod_params Lane=prod
+  - &template_path ./lane_deploy/lane_deploy.yaml
+  - &nonprod_accountid 806404699474
+  - &prod_accountid 115384200684
+
+
+################# The pipeline #################
+
+workflows:
+  package_and_deploy:
+    jobs:
+      - stack_deploy_dev:
+          context: aws-sharedservices
+      - approve_qa_deploy:
+          type: approval
+          requires:
+            - stack_deploy_dev
+      - stack_deploy_qa:
+          context: aws-sharedservices
+          requires:
+            - approve_qa_deploy
+      - approve_stg_deploy:
+          type: approval
+          requires:
+            - stack_deploy_qa
+      - stack_deploy_stg:
+          context: aws-sharedservices
+          requires:
+            - approve_stg_deploy
+      - approve_prod_deploy:
+          type: approval
+          requires:
+            - stack_deploy_stg
+      - stack_deploy_prod:
+          context: aws-sharedservices
+          requires:
+            - approve_prod_deploy
+      
+
+################# Jobs that make up the workflow. These can be lane-specific #################
+
+jobs:
+  stack_deploy_dev:
+    docker:
+      - image: 'cimg/node:lts'
+    steps:
+      - checkout
+      - install_env_dependencies
+      - stack_deploy:
+          lane: dev
+          accountDeployRole: arn:aws:iam::806404699474:role/AccountDeployRole
+          stack_name: *stack_name
+          #artifacts_bucket: *artifacts_bucket
+          parameter_override_file: "lane_deploy_dev02.params"
+          template_path: *template_path
+  stack_deploy_qa:
+    docker:
+      - image: 'cimg/node:lts'
+    steps:
+      - checkout
+      - install_env_dependencies
+      - stack_deploy:
+          lane: qa-01
+          stack_name: *stack_name
+          #artifacts_bucket: *artifacts_bucket
+          parameter_override_file: "lane_deploy_qa.params"
+          template_path: *template_path
+  stack_deploy_stg:
+    docker:
+      - image: 'cimg/node:lts'
+    steps:
+      - checkout
+      - install_env_dependencies
+      - stack_deploy:
+          lane: stg-01
+          accountDeployRole: arn:aws:iam::115384200684:role/AccountDeployRole
+          stack_name: *stack_name
+          #artifacts_bucket: *artifacts_bucket
+          parameter_override_file: "lane_deploy_stg.params"
+          template_path: *template_path
+  stack_deploy_prod:
+    docker:
+      - image: 'cimg/node:lts'
+    steps:
+      - checkout
+      - install_env_dependencies
+      - stack_deploy:
+          lane: prod-01
+          accountDeployRole: arn:aws:iam::115384200684:role/AccountDeployRole
+          stack_name: *stack_name
+          #artifacts_bucket: *artifacts_bucket
+          parameter_override_file: "lane_deploy_prod.params"
+          template_path: *template_path
+
+
+################# Generic build step definitions we can reuse and inject lane-specific params into #################
+
+commands:
+  #call this the first time you run an AWS command
+  assume_role:
+    parameters:
+      region:
+        default: *region
+        type: string
+      accountDeployRole:
+        default: "arn:aws:iam::806404699474:role/AccountDeployRole"
+        type: string
+    steps:
+      - run:
+          name: assume_role
+          command: |
+              CREDENTIALS=$(aws sts assume-role \
+              --role-arn "<<parameters.accountDeployRole>>" \
+              --role-session-name "deploy-role" \
+              | jq -rc .Credentials)
+
+              sudo mkdir -p ~/.aws
+              echo "[default]" | sudo tee ~/.aws/credentials
+              echo "aws_access_key_id = $(echo $CREDENTIALS | jq -r .AccessKeyId)" | sudo tee -a ~/.aws/credentials
+              echo "aws_secret_access_key = $(echo $CREDENTIALS | jq -r .SecretAccessKey)" | sudo tee -a ~/.aws/credentials
+              echo "aws_session_token = $(echo $CREDENTIALS | jq -r .SessionToken)" | sudo tee -a ~/.aws/credentials
+              echo "region = <<parameters.region>>" | sudo tee -a ~/.aws/credentials
+
+  install_env_dependencies:
+    steps:
+      - run:
+          name: Install AWS dependencies
+          command: |
+            cd /tmp || true
+            if [[ $EUID == 0 ]]; then export SUDO=""; else # Check if we are root
+              export SUDO="sudo";
+            fi
+            curl -L https://github.com/aws/aws-sam-cli/releases/latest/download/aws-sam-cli-linux-x86_64.zip -o aws-sam-cli-linux-x86_64.zip
+            unzip aws-sam-cli-linux-x86_64.zip -d sam-installation
+            $SUDO ./sam-installation/install
+            which sam
+            echo "export PATH=$PATH:/usr/local/bin/sam" >> "$BASH_ENV"
+            sam --version
+
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip -d ./
+            sudo ./aws/install
+            aws --version
+            unset  AWS_SESSION_TOKEN
+    
+  stack_deploy:
+    parameters:
+      lane:
+        default: "dev"
+        type: string
+      region:
+        default: *region
+        type: string
+      stack_name:
+        default: ""
+        type: string
+      parameter_override_file:
+        default: ""
+        type: string
+      artifacts_bucket:
+        default: ""
+        type: string
+      template_path:
+        default: "./lane_deploy.yaml"
+        type: string
+      accountDeployRole:
+        default: "arn:aws:iam::806404699474:role/AccountDeployRole"
+        type: string
+    steps:
+      - assume_role:
+          accountDeployRole: <<parameters.accountDeployRole>>
+      - run:
+          name: Deploy stack
+          command: |
+            aws cloudformation deploy \
+              --template-file <<parameters.template_path>> \
+              --stack-name <<parameters.stack_name>>-<<parameters.lane>> \
+              --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+              --no-fail-on-empty-changeset \
+              --parameter-overrides $(cat ./lane_deploy/<<parameters.parameter_override_file>>) \
+              --profile default 
+  
+
+

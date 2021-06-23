@@ -1,0 +1,9 @@
+EnvironmentName=qa-01
+VpcCidr=10.130.16.0/20
+PublicSubnet1CIDR=10.130.17.0/24
+PublicSubnet2CIDR=10.130.18.0/24
+PublicSubnet3CIDR=10.130.19.0/24
+PrivateSubnet1CIDR=10.130.20.0/24
+PrivateSubnet2CIDR=10.130.21.0/24
+PrivateSubnet3CIDR=10.130.22.0/24
+AccountName=nonprod

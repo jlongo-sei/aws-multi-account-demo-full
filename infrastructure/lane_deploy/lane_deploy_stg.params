@@ -1,0 +1,9 @@
+EnvironmentName=stg-01
+VpcCidr=10.131.0.0/20
+PublicSubnet1CIDR=10.131.0.0/24
+PublicSubnet2CIDR=10.131.1.0/24
+PublicSubnet3CIDR=10.131.2.0/24
+PrivateSubnet1CIDR=10.131.3.0/24
+PrivateSubnet2CIDR=10.131.4.0/24
+PrivateSubnet3CIDR=10.131.5.0/24
+AccountName=prod

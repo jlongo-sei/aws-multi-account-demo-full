@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Testing on-prem networking via lambda + sam
+Parameters:
+  Lane: { Type: "String" }
+  SubnetIds: { Type: "CommaDelimitedList" }
+  SecurityGroupIds: { Type: "CommaDelimitedList" }
+  FunctionName: { Type: "String" }
+Globals:
+  Function:
+    Timeout: 30
+    
+Mappings: 
+  ParamsByLane: 
+    SubnetIds:
+      dev: '{{resolve:ssm:dev-02-private-subnets:1}}'
+      qa: '{{resolve:ssm:qa-01-private-subnets:1}}'
+      stg: '{{resolve:ssm:stg-01-private-subnets:1}}'
+      prod: '{{resolve:ssm:prod-01-private-subnets:1}}'
+
+Resources:
+  HelloWorldFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      FunctionName: 
+        Fn::Sub: ${FunctionName}-${Lane}-${AWS::Region}
+      CodeUri: ../build/HelloWorld
+      Handler: app.handler
+      Runtime: nodejs14.x
+      Timeout: 30
+      MemorySize: 128
+      VpcConfig:
+        SecurityGroupIds: { Ref: "SecurityGroupIds" }
+        SubnetIds: { Ref: "SubnetIds" }
+        #  Fn::FindInMap: [ParamsByLane, SubnetIds, Ref: Lane]
+      Environment:
+        Variables:
+          REGION: { Ref: "AWS::Region" }
+          ACCOUNT_ID: { Ref: "AWS::AccountId" }
+          LOGGER_LEVEL: error
+          Lane: { Ref: Lane }
+      Role:
+        Fn::GetAtt: [ HelloWorldRole, Arn ]
+      Events:
+        HttpGet:
+          Type: Api
+          Properties:
+            Path: '/hello'
+            Method: get
+  HelloWorldRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub: helloworld-role-${Lane}-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaENIManagementAccess
+      # To add specific access beyond basic lambda access, uncomment below
+      # Policies:
+      #   - PolicyName:
+      #       Fn::Sub: cat-facts-role-policy-${Lane}-${AWS::Region}
+      #     PolicyDocument:
+      #       Version: '2012-10-17'
+      #       Statement:
+      #       - Effect: Allow
+      #         Action:
+      #           - kinesis:PutRecord
+      #         Resource: "*"

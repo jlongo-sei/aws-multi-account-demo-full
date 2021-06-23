@@ -1,0 +1,38 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Metadata:
+  License: Apache-2.0
+Description: 'This template creates a single
+  user that is a member of a circleci group. Note: This example also creates an
+  AWSAccessKeyId/AWSSecretKey pair associated with the new user. Note that you will need to specify the CAPABILITY_IAM flag
+  when you create the stack to allow this template to execute. You can do this through
+  the AWS management console by clicking on the check box acknowledging that you understand
+  this template creates IAM resources or by specifying the CAPABILITY_IAM flag to
+  the cfn-create-stack command line tool or CreateStack API call.'
+Resources:
+  CircleCIUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: circleci-deploy-user
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodeArtifactReadOnlyAccess
+  CircleCIUserPolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CircleCIUserPolicy
+      PolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action: ['cloudformation:Describe*', 'cloudformation:List*', 'cloudformation:Get*', 'sts:assumerole*']
+          Resource: '*'
+      Users: [!Ref 'CircleCIUser']
+  CircleCIKeys:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref 'CircleCIUser'
+Outputs:
+  AccessKey:
+    Value: !Ref 'CircleCIKeys'
+    Description: AWSAccessKeyId of new user
+  SecretKey:
+    Value: !GetAtt [CircleCIKeys, SecretAccessKey]
+    Description: AWSSecretAccessKey of new user

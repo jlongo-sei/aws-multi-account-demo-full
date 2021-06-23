@@ -1,0 +1,325 @@
+version: 2.1
+custom:
+  - &region us-west-2
+  - &app_name HelloWorld
+  - &rt_name HelloWorld
+  - &artifacts_bucket aws-sam-cache-bucket
+  - &prod_artifacts_bucket sam-cache-aws-demo-us-west-2
+  - &dev_params Lane=dev SubnetIds=subnet-044f4016133f508cc,subnet-06f0012d969d4f8e4 SecurityGroupIds=sg-02b36c2db9d906a6e FunctionName=HelloWorld
+  - &qa_params Lane=qa SubnetIds=subnet-0d0f123777df4035a,subnet-0b00597af314b63a0 SecurityGroupIds=sg-08edae9308580648f FunctionName=HelloWorld
+  - &stg_params Lane=stg SubnetIds=subnet-0c597df5fa34d72a6,subnet-080bce7d212a0eee6 SecurityGroupIds=sg-0c6a5e91934ed4e59 FunctionName=HelloWorld
+  - &prod_params Lane=prod SubnetIds=subnet-0e79334ad26865be0 SecurityGroupIds=sg-0a31ec7aa47c37de0 FunctionName=HelloWorld
+  - &dev_role arn:aws:iam::806404699474:role/LambdaAPIProxyRole
+  - &qa_role arn:aws:iam::806404699474:role/LambdaAPIProxyRole
+  - &stg_role arn:aws:iam::115384200684:role/LambdaAPIProxyRole
+  - &prod_role arn:aws:iam::115384200684:role/LambdaAPIProxyRole
+
+orbs:
+  sam: circleci/aws-sam-serverless@3.0
+
+################# Generic build step definitions we can reuse and inject lane-specific params into #################
+
+commands:
+  assume_role:
+    parameters:
+      region:
+        default: *region
+        type: string
+      role_arn:
+        default: ""
+        type: string
+    steps:
+      - run:
+          name: assume_role
+          command: |
+            CREDENTIALS=$(aws sts assume-role \
+              --role-arn "<<parameters.role_arn>>" \
+              --role-session-name "deploy-role" \
+              | jq -rc .Credentials)
+
+            sudo mkdir -p ~/.aws
+            echo "[default]" | sudo tee ~/.aws/credentials
+            echo "aws_access_key_id = $(echo $CREDENTIALS | jq -r .AccessKeyId)" | sudo tee -a ~/.aws/credentials
+            echo "aws_secret_access_key = $(echo $CREDENTIALS | jq -r .SecretAccessKey)" | sudo tee -a ~/.aws/credentials
+            echo "aws_session_token = $(echo $CREDENTIALS | jq -r .SessionToken)" | sudo tee -a ~/.aws/credentials
+            echo "region = <<parameters.region>>" | sudo tee -a ~/.aws/credentials
+  install_env_dependencies:
+    steps:
+      - run:
+          name: Install AWS dependencies
+          command: |
+            cd /tmp || true
+            if [[ $EUID == 0 ]]; then export SUDO=""; else # Check if we are root
+              export SUDO="sudo";
+            fi
+            curl -L https://github.com/aws/aws-sam-cli/releases/download/v1.23.0/aws-sam-cli-linux-x86_64.zip -o aws-sam-cli-linux-x86_64.zip
+            unzip aws-sam-cli-linux-x86_64.zip -d sam-installation
+            $SUDO ./sam-installation/install
+            which sam
+            echo "export PATH=$PATH:/usr/local/bin/sam" >> "$BASH_ENV"
+            sam --version
+
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip -d ./
+            sudo ./aws/install
+            aws --version
+
+  install_project_dependencies:
+    steps:
+      - run:
+          name: Install dependencies
+          command: |
+            echo $LANE
+            npm i
+            for d in lambdas/* ; do
+              LAMBDA_NAME=$(echo $d | sed 's/lambdas\///g')
+              pushd $d
+              npm i
+              popd
+            done
+  upload_build_artifact:
+    parameters:
+      app_name:
+        default: *app_name
+        type: string
+      artifacts_bucket:
+        default: *artifacts_bucket
+        type: string
+    steps:
+      - assume_role: # Always dev role since artifact bucket is in nonprod
+          role_arn: *dev_role
+      - run:
+          name: Upload build artifact
+          command: |
+            aws --profile default sts get-caller-identity
+            echo $AWS_ACCESS_KEY_ID
+            cat ~/.aws/credentials
+            zip -r "<<parameters.app_name>>-$CIRCLE_SHA1.zip" ./build/
+            aws --profile default s3 cp  "<<parameters.app_name>>-$CIRCLE_SHA1.zip" "s3://<<parameters.artifacts_bucket>>/<<parameters.app_name>>/<<parameters.app_name>>-$CIRCLE_SHA1.zip"
+  download_build_artifact:
+    parameters:
+      app_name:
+        default: *app_name
+        type: string
+      artifacts_bucket:
+        default: *artifacts_bucket
+        type: string
+    steps:
+      - assume_role: # Always dev role since artifact bucket is in nonprod
+          role_arn: *dev_role
+      - run:
+          name: Download built artifact
+          command: |
+            mkdir -p build
+            aws --profile default s3 cp "s3://<<parameters.artifacts_bucket>>/<<parameters.app_name>>/<<parameters.app_name>>-$CIRCLE_SHA1.zip" "build/<<parameters.app_name>>.zip"
+            unzip -o "build/<<parameters.app_name>>.zip"
+  unit_test:
+    parameters:
+      lane:
+        default: "dev"
+        type: string
+    steps:
+      - run:
+          name: Run unit tests
+          command: |
+            LANE="<<parameters.lane>>"
+            sudo rm -rf test-results
+            sudo mkdir -p test-results
+            sudo mkdir -p test-results/jest
+            sudo npx jest --coverage --ci --reporters=jest-junit --coverageDirectory coverage/jest lambdas
+  build_project_artifact:
+    parameters:
+      app_name:
+        default: *app_name
+        type: string
+      artifacts_bucket:
+        default: *artifacts_bucket
+        type: string
+    steps:
+      - run:
+          name: Build project artifact
+          command: |
+            #!/bin/bash -e
+
+            sudo npm i -g webpack webpack-cli
+
+            rm -rf build
+            mkdir -p build
+
+            # build and bundle each lambda
+            for d in lambdas/* ; do
+              LAMBDA_NAME=$(echo $d | sed 's/lambdas\///g')
+              mkdir -p build/$LAMBDA_NAME
+              pushd $d
+              WEBPACK_DEST="dest"
+              npx webpack --entry ./ --mode=production -o $WEBPACK_DEST
+              sudo cp "assets" "$WEBPACK_DEST/assets" -r 
+              popd
+
+              ls $d
+
+              #zip -jr "build/$LAMBDA_NAME.zip" "$d/$WEBPACK_DEST"
+              cp "./$d/$WEBPACK_DEST/"* "build/$LAMBDA_NAME" -r
+              
+            done    
+  sam_deploy:
+    parameters:
+      lane:
+        default: "dev"
+        type: string
+      region:
+        default: *region
+        type: string
+      app_name:
+        default: *app_name
+        type: string
+      artifacts_bucket:
+        default: *artifacts_bucket
+        type: string
+      parameter_overrides:
+        default: ""
+        type: string
+      sam_template_path:
+        default: "./infra/sam.yml"
+        type: string
+    steps:
+      - run:
+          environment:
+            AWS_ACCESS_KEY_ID: ''
+          name: Package artifacts
+          command: |
+            sam validate -t <<parameters.sam_template_path>> --profile default
+            sudo mkdir -p ./packaged
+            sudo -E sam package \
+              --template-file  <<parameters.sam_template_path>> \
+              --s3-bucket <<parameters.artifacts_bucket>> \
+              --output-template-file ./packaged/sam-packaged.yaml
+      - run:
+          environment:
+            AWS_ACCESS_KEY_ID: ''
+          name: Deploy stack
+          command: |
+            aws cloudformation deploy \
+              --template-file packaged/sam-packaged.yaml \
+              --stack-name <<parameters.app_name>>-<<parameters.lane>> \
+              --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+              --no-fail-on-empty-changeset \
+              --parameter-overrides <<parameters.parameter_overrides>> \
+              --profile default
+  
+################# Jobs that make up the workflow. These can be lane-specific #################
+
+jobs:
+  build_and_test:
+    docker:
+      - image: 'cimg/node:lts'
+    working_directory: &working_dir ~/repo
+    steps:
+      - checkout
+      - install_project_dependencies
+      #- unit_test:
+      #    lane: dev
+      #- store_test_results:
+      #    path: test-results
+      - store_artifacts:
+          path: coverage
+      - build_project_artifact
+      - install_env_dependencies
+      - upload_build_artifact
+  sam_deploy_dev:
+    docker:
+      - image: 'cimg/node:lts'
+    steps:
+      - checkout
+      - install_env_dependencies
+      - assume_role:
+          role_arn: *dev_role
+      - download_build_artifact
+      - sam_deploy:
+          lane: dev
+          app_name: *app_name
+          artifacts_bucket: *artifacts_bucket
+          parameter_overrides: *dev_params
+  sam_deploy_qa:
+    docker:
+      - image: 'cimg/node:lts'
+    steps:
+      - checkout
+      - install_env_dependencies
+      - assume_role:
+          role_arn: *qa_role
+      - download_build_artifact
+      - sam_deploy:
+          lane: qa
+          app_name: *app_name
+          artifacts_bucket: *artifacts_bucket
+          parameter_overrides: *qa_params
+  sam_deploy_stg:
+    docker:
+      - image: 'cimg/node:lts'
+    steps:
+      - checkout
+      - install_env_dependencies
+      - assume_role:
+          role_arn: *qa_role
+      - download_build_artifact
+      - assume_role:
+          role_arn: *stg_role
+      - sam_deploy:
+          lane: stg
+          app_name: *app_name
+          artifacts_bucket: *prod_artifacts_bucket
+          parameter_overrides: *stg_params
+  sam_deploy_prod:
+    docker:
+      - image: 'cimg/node:lts'
+    steps:
+      - checkout
+      - install_env_dependencies
+      - assume_role:
+          role_arn: *qa_role
+      - download_build_artifact
+      - assume_role:
+          role_arn: *prod_role
+      - sam_deploy:
+          lane: prod
+          app_name: *app_name
+          artifacts_bucket: *prod_artifacts_bucket
+          parameter_overrides: *prod_params    
+
+################# The pipeline #################
+
+workflows:
+  
+  test_and_deploy:
+    jobs:
+      - build_and_test:
+          context: aws-sharedservices
+      - sam_deploy_dev:
+          context: aws-sharedservices
+          requires:
+            - build_and_test
+      - approve_qa:
+          type: approval
+          requires:
+            - sam_deploy_dev
+      - sam_deploy_qa:
+          context: aws-sharedservices
+          requires:
+            - approve_qa
+      - approve_stg:
+          type: approval
+          requires:
+            - sam_deploy_qa
+      - sam_deploy_stg:
+          context: aws-sharedservices
+          requires:
+            - approve_stg
+      - approve_prod:
+          type: approval
+          requires:
+            - sam_deploy_stg
+      - sam_deploy_prod:
+          context: aws-sharedservices
+          requires:
+            - approve_prod

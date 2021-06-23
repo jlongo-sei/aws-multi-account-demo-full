@@ -1,0 +1,9 @@
+EnvironmentName=prod-01
+VpcCidr=10.131.16.0/20
+PublicSubnet1CIDR=10.131.16.0/24
+PublicSubnet2CIDR=10.131.17.0/24
+PublicSubnet3CIDR=10.131.18.0/24
+PrivateSubnet1CIDR=10.131.19.0/24
+PrivateSubnet2CIDR=10.131.20.0/24
+PrivateSubnet3CIDR=10.131.21.0/24
+AccountName=prod

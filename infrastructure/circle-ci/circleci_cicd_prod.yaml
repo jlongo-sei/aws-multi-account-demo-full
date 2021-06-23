@@ -1,0 +1,99 @@
+#roles, s3 bucket for artifacts
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Creates roles for deployments and an s3 bucket to hold deployment artifacts. Must be run by an admin.'
+
+Resources:
+  #Roles that allow for specific types of deploys, or deploys for specific projects
+  #Role that allows access to only Lambda for primary compute, plus S3, CF, and EKS for CI/CD
+  LambdaAPIProxyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaAPIProxyRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            AWS: arn:aws:iam::791134446342:user/circleci-deploy-user
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName:
+            Fn::Sub: deploy-policy-nonprod
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+                - iam:ListPolicies
+                - iam:CreateRole
+                - iam:AttachRolePolicy 
+                - iam:DetachRolePolicy
+              Resource: "*"
+      ManagedPolicyArns:
+      #- arn:aws:iam::aws:policy/AdministratorAccess
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+      - arn:aws:iam::aws:policy/AWSLambda_FullAccess
+      - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+      - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+      - arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator
+  
+  #Role that allows for infrastructure to be deployed via CI/CD
+  AccountDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AccountDeployRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            AWS: arn:aws:iam::791134446342:user/circleci-deploy-user
+          Action: sts:AssumeRole
+      Policies:
+        - PolicyName:
+            Fn::Sub: account-deploy-policy-nonprod
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+                - iam:ListPolicies
+                - iam:CreateRole
+                - iam:AttachRolePolicy 
+                - iam:DetachRolePolicy
+                - ec2:*
+                - ssm:PutParameter
+                - ssm:AddTagsToResource
+                - ssm:DeleteParameter
+              Resource: "*"
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+      - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      - arn:aws:iam::aws:policy/AmazonRoute53DomainsFullAccess
+      - arn:aws:iam::aws:policy/AmazonRoute53ResolverFullAccess
+      - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+      - arn:aws:iam::aws:policy/AWSLambda_FullAccess
+
+#S3 Bucket for artifacts
+  SamCacheBucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: sam-cache-aws-demo-us-west-2
+
+  #ProdS3Bucket:
+  #  Type: 'AWS::S3::Bucket'
+  #  DeletionPolicy: Retain
+  #  Properties:
+  #    BucketName: prod-circleci-artifacts-us-west-2
+
+  #ProdArtifactsS3Bucket:
+  #  Type: 'AWS::S3::Bucket'
+  #  DeletionPolicy: Retain
+  #  Properties:
+  #    BucketName: prod-circleci-artifacts-us-west-2
+
+  
